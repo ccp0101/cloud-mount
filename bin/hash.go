@@ -4,7 +4,7 @@ import (
 	"os"
 	"io"
 	"fmt"
-	"crypto/sha1"
+	"crypto/md5"
 )
 
 func main() {
@@ -12,16 +12,14 @@ func main() {
 
 	for {
 		b := make([]byte, blockSize)
-		n, err := os.Stdin.Read(b)
-		if err != io.EOF && err != nil {
+		n, err := io.ReadFull(os.Stdin, b)
+		if err != io.ErrUnexpectedEOF && err != nil {
 			panic(err)
 		}
 
-		h := sha1.New()
-		h.Write(b)
-		fmt.Printf("%x\n", h.Sum(nil))
+		fmt.Printf("%x\n", md5.Sum(b))
 
-		if err == io.EOF || n == 0 {
+		if err == io.ErrUnexpectedEOF || n == 0 {
 			break
 		}
 	}

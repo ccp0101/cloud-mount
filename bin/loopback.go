@@ -1,70 +1,76 @@
-// Copyright (C) 2014 Andreas Klauer <Andreas.Klauer@metamorpher.de>
-// License: GPL
-
-// nbdsetup is an alternative to losetup using network block devices.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-
+	"blockmap"
+	"io/ioutil"
+	"github.com/hashicorp/golang-lru"
 	"github.com/ccp0101/go-nbd"
 )
 
-type deviceProxy struct {
-	nbdFile *nbd.NBD
-	device nbd.Device
+type Loopback struct {
+	folder string
+	writeEnabled bool
+	blockSize int64
 }
 
-func (self deviceProxy) ReadAt(b []byte, off int64) (n int, err error) {
-	fmt.Printf("ReadAt(): off = %d, len = %d\n", off, len(b))
-	return self.device.ReadAt(b, off)
+func (self Loopback) MapFilename(id int64) (string) {
+	return fmt.Sprintf("%s/%d.block", self.folder, id)
 }
 
-func (self deviceProxy) WriteAt(b []byte, off int64) (n int, err error) {
-	fmt.Printf("Write(): off = %d, len = %d\n", off, len(b))
-	return self.device.WriteAt(b, off)
+func (self Loopback) Read(id int64) (b []byte, err error) {
+	filename := self.MapFilename(id)
+	file, err := os.Open(filename)
+	if os.IsNotExist(err) {
+		b = make([]byte, self.blockSize)
+		err = nil
+		return
+	}
+	if err != nil {
+		return
+	}
+	b, err = ioutil.ReadAll(file)
+	file.Close()
+	return
 }
 
-func (self deviceProxy) Sync() (err error) {
-	fmt.Printf("Sync()\n")
-	return self.device.Sync()
+func (self Loopback) Write(id int64, b []byte) (err error) {
+	filename := self.MapFilename(id)
+	err = ioutil.WriteFile(filename, b, os.FileMode(0666))
+	return
 }
 
 func main() {
-	filename := flag.String("file", "", "regular file or block device")
+	folder := flag.String("folder", "", "folder for blocks")
+	size := flag.Int("size", 128 * 1024 * 1024, "size in bytes")
 	write := flag.Bool("write", false, "use true for read-write mode")
 	flag.Parse()
-	if *filename == "" {
+	if *folder == "" || *size == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
-	fmt.Printf("Using %s in read", *filename)
-	file, err := os.Open(*filename)
-	if *write {
-		fmt.Printf("-write")
-		file, err = os.OpenFile(*filename, os.O_RDWR, os.FileMode(0666))
-	}
-	fmt.Printf(" mode.\n")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	stat, _ := file.Stat()
+	bs := int64(4 * 1024 * 1024)
 
-	device := new(deviceProxy)
-	device.device = file
-	device.nbdFile = nbd.Create(device, stat.Size())
-	dev, err := device.nbdFile.Connect()
+	loopback := Loopback {
+		folder: *folder,
+		writeEnabled: *write,
+		blockSize: bs,
+	}
+	
+	cache, err := lru.New(4)
+	bm := blockmap.NewBlockMap(loopback, bs, int64(*size) / bs, cache)
+
+	device := nbd.Create(bm, int64(*size))
+	dev, err := device.Connect()
 
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println("NBD device: ", dev)
-
-	if device.nbdFile.Loop(); err != nil {
+	if bm.Loop(device); err != nil {
 		panic(err)
 	}
 }
